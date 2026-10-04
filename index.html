@@ -493,12 +493,17 @@ const BOOKS=[
 ];
 
 const AVATARS=[
- {id:'moises',n:'Moisés',cost:0},
- {id:'david',n:'David',cost:40},
- {id:'ester',n:'Ester',cost:60},
- {id:'daniel',n:'Daniel',cost:80},
- {id:'pedro',n:'Pedro',cost:100},
- {id:'pablo',n:'Pablo',cost:120},
+ {id:'moises',n:'Moisés',cost:0,perk:'Guía inicial, siempre disponible.'},
+ {id:'david',n:'David',cost:40,perk:'❤️ +1 corazón extra (jugás con 4 en vez de 3).'},
+ {id:'ester',n:'Ester',cost:60,perk:'💎 +20% de gemas en cada respuesta correcta.'},
+ {id:'daniel',n:'Daniel',cost:80,perk:'🦁 Pista gratis: descarta una opción incorrecta en cada pregunta.'},
+ {id:'pedro',n:'Pedro',cost:100,perk:'⏱ Los corazones se recuperan más rápido (15 min en vez de 20).'},
+ {id:'pablo',n:'Pablo',cost:120,perk:'🔥 Racha protegida: si faltás un día, no la perdés (una vez por racha).'},
+];
+const GEM_PACKS=[
+ {key:'g1',n:'100',cost:0.99},
+ {key:'g2',n:'300',cost:2.99,best:false},
+ {key:'g3',n:'800',cost:6.99,best:true},
 ];
 
 const QUESTION_TIME = 20; // segundos por pregunta
@@ -507,12 +512,12 @@ function load(){
  try{return Object.assign(def(), JSON.parse(localStorage.getItem(KEY)));}catch(e){return def();}
 }
 function def(){
- return {gems:20,hearts:3,heartT:0,avatar:'moises',owned:['moises'],progress:{genesis:0,exodo:0},stars:{},streak:1,lastDay:0,music:.5,sfx:.7,noAds:false};
+ return {gems:20,hearts:3,heartT:0,avatar:'moises',owned:['moises'],progress:{genesis:0,exodo:0},stars:{},streak:1,lastDay:0,music:.5,sfx:.7,noAds:false,shieldUsed:false};
 }
 let S=load();
 function save(){localStorage.setItem(KEY,JSON.stringify(S));}
 
-let scene='menu', curBook=null, curLevel=0, correctCount=0, picked=-1, timeLeft=QUESTION_TIME, timerId=null, timedOut=false;
+let scene='menu', curBook=null, curLevel=0, correctCount=0, picked=-1, timeLeft=QUESTION_TIME, timerId=null, timedOut=false, hintRemoved=-1;
 const el=document.getElementById('screen');
 const floatEl=document.getElementById('float');
 
@@ -542,9 +547,9 @@ const Aud = (function(){
    o.connect(g); g.connect(padGain);
    o.start(); lfo.start();
   });
-  padGain.gain.setTargetAtTime(0.035*S.music, c.currentTime, 2);
+  padGain.gain.setTargetAtTime(0.22*S.music, c.currentTime, 2);
  }
- function setVol(v){ if(padGain && ctx) padGain.gain.setTargetAtTime(0.035*v, ctx.currentTime, 0.4); }
+ function setVol(v){ if(padGain && ctx) padGain.gain.setTargetAtTime(0.22*v, ctx.currentTime, 0.4); }
  function blip(ok){
   const c = ensure(); if(!c || S.sfx<=0) return;
   const o = c.createOscillator(), g = c.createGain();
@@ -565,18 +570,29 @@ const Aud = (function(){
 document.addEventListener('touchstart', Aud.unlock, {once:true});
 document.addEventListener('click', Aud.unlock, {once:true});
 
+/* ---------- Beneficios de los personajes guía (dan una razón real para comprarlos) ---------- */
+function maxHearts(){ return S.avatar==='david'?4:3; }
+function heartRegenMin(){ return S.avatar==='pedro'?15:20; }
+function gemsMult(){ return S.avatar==='ester'?1.2:1; }
+function hintActive(){ return S.avatar==='daniel'; }
+function streakShielded(){ return S.avatar==='pablo'; }
+
 function checkHeartRegen(){
- if(S.hearts<3 && S.heartT){
+ const MAX=maxHearts(), MIN=heartRegenMin();
+ if(S.hearts<MAX && S.heartT){
   const mins=(Date.now()-S.heartT)/60000;
-  const regen=Math.floor(mins/20);
-  if(regen>0){S.hearts=Math.min(3,S.hearts+regen); S.heartT = S.hearts<3? Date.now() - (mins%20)*60000 : 0; save();}
+  const regen=Math.floor(mins/MIN);
+  if(regen>0){S.hearts=Math.min(MAX,S.hearts+regen); S.heartT = S.hearts<MAX? Date.now() - (mins%MIN)*60000 : 0; save();}
  }
 }
 function checkStreak(){
  const day=Math.floor(Date.now()/86400000);
  if(S.lastDay===0){S.lastDay=day;S.streak=1;}
  else if(day===S.lastDay+1){S.lastDay=day;S.streak++;S.gems+=5;save();}
- else if(day>S.lastDay+1){S.lastDay=day;S.streak=1;}
+ else if(day>S.lastDay+1){
+  if(streakShielded() && day===S.lastDay+2 && !S.shieldUsed){ S.lastDay=day; S.shieldUsed=true; save(); }
+  else { S.lastDay=day;S.streak=1;S.shieldUsed=false; }
+ }
 }
 checkHeartRegen();checkStreak();
 
@@ -629,7 +645,7 @@ levellist:()=>{
  const b=curBook, done=S.progress[b.id]||0;
  return `
  <div class="logo fadein" style="font-size:20px">${b.name}</div>
- <div class="hearts">${'❤️'.repeat(S.hearts)}${'🖤'.repeat(3-S.hearts)}</div>
+ <div class="hearts">${'❤️'.repeat(S.hearts)}${'🖤'.repeat(maxHearts()-S.hearts)}</div>
  <div class="path">
   ${b.levels.map((lv,i)=>{
    const unlocked=i<=done, st=S.stars[b.id+i]||0, isDone=i<done;
@@ -660,38 +676,63 @@ question:()=>{
  </div>
  <div class="timerwrap"><div class="timerbar" style="width:${pct}%"></div></div>
  <h3>${lv.t}</h3>
+ ${hintActive()?`<p class="note" style="margin:2px 0">🦁 Pista de Daniel: descartamos una opción incorrecta.</p>`:''}
  <div class="qbox fadein">
   <div class="story" style="font-size:14px;padding:12px">${lv.q}</div>
   ${lv.o.map((op,i)=>{
    let cls='opt';
+   if(i===hintRemoved && picked<0 && !timedOut) cls+=' bad';
    if(picked>=0 || timedOut){ if(i===lv.c) cls+=' ok'; else if(i===picked) cls+=' bad'; }
-   return `<div class="${cls}" ${(picked<0 && !timedOut)?`onclick="answer(${i})"`:''}>${op}</div>`;
+   const disabled = i===hintRemoved && picked<0 && !timedOut;
+   return `<div class="${cls}" style="${disabled?'opacity:.45;text-decoration:line-through;cursor:default':''}" ${(picked<0 && !timedOut && !disabled)?`onclick="answer(${i})"`:''}>${op}</div>`;
   }).join('')}
  </div>
  ${(picked>=0||timedOut)?feedbackBlock(lv):''}
 `;},
 nohearts:()=>`
  <div class="logo fadein" style="font-size:22px">Sin corazones</div>
- <p class="note fadein">Te quedaste sin corazones. Recuperás uno cada 20 minutos, o mirá un video para recuperarlos todos ahora.</p>
+ <p class="note fadein">Te quedaste sin corazones. Recuperás uno cada ${heartRegenMin()} minutos, o mirá un video para recuperarlos todos ahora.</p>
  <button class="b p" onclick="watchAdForHearts()">Ver video y continuar</button>
  <button class="b l" onclick="go('levellist')">Esperar / volver a libros</button>
 `,
 shop:()=>`
  <div class="logo fadein" style="font-size:22px">Tienda</div>
  <div class="chip">💎 ${S.gems}</div>
+
  <h3>Personajes guía</h3>
+ <p class="note" style="margin-top:-4px">Cada guía te acompaña con una ventaja real para tu camino.</p>
  <div class="shopgrid">
   ${AVATARS.map(a=>{
    const owned=S.owned.includes(a.id), eq=S.avatar===a.id;
    return `<div class="shopcard ${eq?'eq':''}">
     ${avatarImg(a.id,64)}<b style="font-size:13px">${a.n}</b>
+    <p style="font-size:10.5px;opacity:.85;text-align:center;margin:0 0 2px;line-height:1.3">${a.perk}</p>
     ${eq?`<span style="font-size:11px;color:var(--gold)">En uso</span>`
      : owned? `<button class="b" style="min-width:0;padding:7px 10px;font-size:12px" onclick="useAvatar('${a.id}')">Usar</button>`
      : `<button class="b p" style="min-width:0;padding:7px 10px;font-size:12px" onclick="buyAvatar('${a.id}')">💎 ${a.cost}</button>`}
    </div>`;
   }).join('')}
  </div>
- <p class="note">Los personajes son solo decorativos: te acompañan en tu camino, no cambian la dificultad.</p>
+
+ <h3>Comprar gemas</h3>
+ <p class="note" style="margin-top:-4px">Usá las gemas para desbloquear guías al instante.</p>
+ <div class="shopgrid">
+  ${GEM_PACKS.map(p=>`<div class="shopcard ${p.best?'eq':''}">
+    <div style="font-size:30px">💎</div>
+    <b style="font-size:14px">${p.n} gemas</b>
+    ${p.best?'<span style="font-size:10px;color:var(--gold)">MEJOR PRECIO</span>':''}
+    <button class="b p" style="min-width:0;padding:7px 10px;font-size:12px" onclick="buyGems('${p.key}')">$${p.cost.toFixed(2)}</button>
+   </div>`).join('')}
+ </div>
+
+ <h3>Sin anuncios</h3>
+ ${S.noAds
+  ? `<p class="note">✔ Ya quitaste los anuncios. ¡Gracias por tu apoyo!</p>`
+  : `<div class="card" style="align-items:center">
+      <p class="note" style="margin:0 0 8px">Jugá sin interrupciones: quitá los anuncios para siempre con una sola compra.</p>
+      <button class="b p" onclick="buyNoAds()">Quitar anuncios — $3.99</button>
+     </div>`}
+
  <button class="b l" onclick="go('menu')">← Volver</button>
 `,
 settings:()=>`
@@ -709,6 +750,11 @@ function openBook(id){curBook=BOOKS.find(b=>b.id===id); go('levellist');}
 function openLevel(i){curLevel=i;correctCount=0;picked=-1;timedOut=false;go('story');}
 function startQuestion(){
  picked=-1; timedOut=false; timeLeft=QUESTION_TIME;
+ const lv0=curBook.levels[curLevel];
+ if(hintActive()){
+  const wrongIdx=lv0.o.map((_,i)=>i).filter(i=>i!==lv0.c);
+  hintRemoved = wrongIdx[Math.floor(Math.random()*wrongIdx.length)];
+ } else hintRemoved=-1;
  scene='question'; render();
  timerId=setInterval(()=>{
   timeLeft--;
@@ -733,7 +779,7 @@ function feedbackBlock(lv){
   return `<div class="verse">⏱ Se acabó el tiempo.<br>📖 <b>${lv.v}</b><br>${lv.e}</div>`;
  }
  if(picked===lv.c){
-  return `<div class="verse" style="border-color:#8fd9a5;background:rgba(111,227,165,.1)">Correcto. +10 💎</div>
+  return `<div class="verse" style="border-color:#8fd9a5;background:rgba(111,227,165,.1)">Correcto. +${Math.round(10*gemsMult())} 💎</div>
    <button class="b p" onclick="finishLevel()">Continuar →</button>`;
  }
  return `<div class="verse">📖 <b>${lv.v}</b><br>${lv.e}</div>
@@ -745,8 +791,8 @@ function answer(i){
  const lv=curBook.levels[curLevel];
  picked=i;
  if(i===lv.c){
-  correctCount++; S.gems+=10; save();
-  fx('+10 💎', window.innerWidth/2-20, 120);
+  correctCount++; const g=Math.round(10*gemsMult()); S.gems+=g; save();
+  fx('+'+g+' 💎', window.innerWidth/2-20, 120);
   Aud.blip(true);
   if(window.Native && Native.haptic) Native.haptic(20);
  } else {
@@ -774,15 +820,39 @@ function buyAvatar(id){
  else fx('Faltan 💎', window.innerWidth/2-30, 200);
 }
 
+const GEM_AMOUNTS={g1:100,g2:300,g3:800};
+async function buyGems(key){
+ if(!window.Native || !Native.isNative){
+  // En el navegador (sin compras reales) simulamos la compra para poder probar el juego.
+  fx('💳 Compra simulada...', window.innerWidth/2-55, 160);
+  setTimeout(()=>{ S.gems+=GEM_AMOUNTS[key]||0; save(); render(); }, 700);
+  return;
+ }
+ const ok = await Native.buy(key);
+ if(ok){ S.gems+=GEM_AMOUNTS[key]||0; save(); render(); }
+ else fx('No se completó la compra', window.innerWidth/2-70, 200);
+}
+async function buyNoAds(){
+ if(!window.Native || !Native.isNative){
+  fx('💳 Compra simulada...', window.innerWidth/2-55, 160);
+  setTimeout(()=>{ S.noAds=true; save(); render(); }, 700);
+  return;
+ }
+ const ok = await Native.buy('noads');
+ if(ok){ S.noAds=true; save(); render(); if(Native.hideBanner) Native.hideBanner(); }
+ else fx('No se completó la compra', window.innerWidth/2-70, 200);
+}
+window.buyGems=buyGems; window.buyNoAds=buyNoAds;
+
 async function watchAdForHearts(){
  if(!window.Native || !Native.isNative){
   // En el navegador (sin anuncios reales) simulamos el video para poder probar el juego.
   fx('🎬 Video simulado...', window.innerWidth/2-50, 160);
-  setTimeout(()=>{ S.hearts=3; S.heartT=0; save(); go('levellist'); }, 900);
+  setTimeout(()=>{ S.hearts=maxHearts(); S.heartT=0; save(); go('levellist'); }, 900);
   return;
  }
  const ok = await Native.showAd('rewarded');
- if(ok){ S.hearts=3; S.heartT=0; save(); go('levellist'); }
+ if(ok){ S.hearts=maxHearts(); S.heartT=0; save(); go('levellist'); }
 }
 window.watchAdForHearts=watchAdForHearts;
 
